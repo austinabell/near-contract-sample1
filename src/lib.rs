@@ -1,9 +1,6 @@
 use near_sdk::borsh::{self, BorshDeserialize, BorshSerialize};
-use near_sdk::collections::{LazyOption, LookupMap, UnorderedSet};
-use near_sdk::json_types::{ValidAccountId, U64};
-use near_sdk::{env, near_bindgen, BorshStorageKey, PanicOnDefault};
-
-near_sdk::setup_alloc!();
+use near_sdk::store::{Lazy, LookupMap, UnorderedSet};
+use near_sdk::{env, near_bindgen, AccountId, BorshStorageKey, PanicOnDefault};
 
 #[derive(BorshSerialize, BorshStorageKey)]
 pub enum StorageKey {
@@ -21,8 +18,8 @@ pub struct UniqueValues {
 #[near_bindgen]
 #[derive(BorshDeserialize, BorshSerialize, PanicOnDefault)]
 pub struct StatusMessage {
-    pub records: LookupMap<String, String>,
-    pub unique_values: LazyOption<UniqueValues>,
+    pub records: LookupMap<AccountId, String>,
+    pub unique_values: Lazy<UniqueValues>,
 }
 
 impl UniqueValues {
@@ -41,37 +38,32 @@ impl StatusMessage {
     pub fn new() -> Self {
         Self {
             records: LookupMap::new(StorageKey::Records),
-            unique_values: LazyOption::new(
+            unique_values: Lazy::new(
                 StorageKey::UniqueValues,
-                Some(&UniqueValues::new(StorageKey::UniqueValuesSet)),
+                UniqueValues::new(StorageKey::UniqueValuesSet),
             ),
         }
     }
     /// Returns true if the message is unique
     pub fn set_status(&mut self, message: String) -> bool {
         let account_id = env::signer_account_id();
-        self.records.insert(&account_id, &message);
-        let mut unique_values = self.unique_values.get().unwrap();
+        self.records.insert(account_id, message.clone());
         // Without the following call of function `set`,
         // it will cause inconsistency of the `UnorderedSet` inside `UniqueValues`.
         // self.unique_values.set(&unique_values);
-        unique_values.unique_values.insert(&message)
+        self.unique_values.unique_values.insert(message)
     }
     //
-    pub fn get_status(&self, account_id: ValidAccountId) -> Option<String> {
-        self.records.get(account_id.as_ref())
+    pub fn get_status(&self, account_id: AccountId) -> Option<&String> {
+        self.records.get(&account_id)
     }
     //
-    pub fn unique_values_count(&self) -> U64 {
-        self.unique_values.get().unwrap().unique_values.len().into()
+    pub fn unique_values_count(&self) -> u32 {
+        self.unique_values.unique_values.len()
     }
     //
     pub fn contains_message(&self, message: String) -> bool {
-        self.unique_values
-            .get()
-            .unwrap()
-            .unique_values
-            .contains(&message)
+        self.unique_values.unique_values.contains(&message)
     }
 }
 
@@ -80,13 +72,11 @@ impl StatusMessage {
 mod tests {
     use super::*;
     use near_sdk::test_utils::VMContextBuilder;
-    use near_sdk::MockedBlockchain;
     use near_sdk::{testing_env, VMContext};
-    use std::convert::TryInto;
 
     fn get_context(is_view: bool) -> VMContext {
         VMContextBuilder::new()
-            .signer_account_id("bob_near".try_into().unwrap())
+            .signer_account_id("bob_near".parse().unwrap())
             .is_view(is_view)
             .build()
     }
@@ -98,8 +88,8 @@ mod tests {
         let mut contract = StatusMessage::new();
         contract.set_status("hello".to_string());
         assert_eq!(
-            "hello".to_string(),
-            contract.get_status("bob_near".try_into().unwrap()).unwrap()
+            "hello",
+            contract.get_status("bob_near".parse().unwrap()).unwrap()
         );
     }
 
@@ -122,12 +112,12 @@ mod tests {
 
     #[test]
     fn get_nonexistent_message() {
-        let context = get_context(true);
-        testing_env!(context);
         let contract = StatusMessage::new();
-        assert_eq!(
-            None,
-            contract.get_status("francis.near".try_into().unwrap())
-        );
+
+        testing_env!(get_context(true));
+        assert_eq!(None, contract.get_status("francis.near".parse().unwrap()));
+
+        // Must have this because on drop, StatusMessage will write intermediate values to storage
+        testing_env!(get_context(false));
     }
 }
